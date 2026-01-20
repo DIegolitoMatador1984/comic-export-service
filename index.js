@@ -19,27 +19,33 @@ let isProcessing = false;
 // Storage for all exported files (temporary)
 const exportFiles = new Map();
 
-const updateExportStatus = async (exportId, status, data = {}) => {
+const updateExportStatus = async (exportId, status, additionalData = {}) => {
   try {
-    const response = await fetch('https://preview--comicreate-5f5892c3.base44.app/api/apps/69625406b9fddce15f5892c3/functions/updateExportStatus', {
-      method: 'POST',
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    const updateData = {
+      status,
+      ...additionalData
+    };
+
+    const response = await fetch(`${supabaseUrl}/rest/v1/Export?id=eq.${exportId}`, {
+      method: 'PATCH',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseKey}`,
+        'apikey': supabaseKey
       },
-      body: JSON.stringify({ 
-        export_id: exportId, 
-        status, 
-        ...data 
-      })
+      body: JSON.stringify(updateData)
     });
-    
+
     if (!response.ok) {
-      console.error('Failed to update status:', await response.text());
+      console.error(`Failed to update export: ${response.status}`, await response.text());
     } else {
-      console.log('✅ Status updated to:', status);
+      console.log(`✅ Status updated to: ${status}`);
     }
   } catch (error) {
-    console.error('❌ Error updating status:', error);
+    console.error('Update error:', error.message);
   }
 };
 
@@ -350,4 +356,5 @@ app.listen(PORT, () => {
   console.log(`   • Full HD: PNG 2048px, compression min (1)`);
   console.log(`   • Compressed: PNG 1200px, compression max (9)`);
   console.log(`🗑️  Auto-cleanup: Files deleted after 1 hour`);
+  console.log(`📊 Supabase direct connection enabled`);
 });
