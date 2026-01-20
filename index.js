@@ -22,19 +22,27 @@ const getSupabaseClient = () => {
 
 const updateExportStatus = async (exportId, status, data = {}) => {
   try {
-    const response = await fetch(`${process.env.BASE44_API_URL}/entities/Export/${exportId}`, {
-      method: 'PATCH',
+    const response = await fetch('https://preview--comicreate-5f5892c3.base44.app/api/apps/69625406b9fddce15f5892c3/functions/updateExportStatus', {
+      method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.BASE44_SERVICE_ROLE_KEY}`
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ status, ...data })
+      body: JSON.stringify({ 
+        export_id: exportId, 
+        status, 
+        ...data 
+      })
     });
+    
+    if (!response.ok) {
+      console.error('Failed to update status:', await response.text());
+    } else {
+      console.log('✅ Status updated to:', status);
+    }
   } catch (error) {
-    console.error('Error updating status:', error);
+    console.error('❌ Error updating status:', error);
   }
 };
-
 const downloadImage = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
