@@ -50,14 +50,24 @@ const downloadImage = async (url) => {
 };
 
 const compressImage = async (imageBuffer, quality = 85) => {
-  return sharp(imageBuffer)
-    .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
-    .png({ compression: quality === 98 ? 1 : 6 })
-    .toBuffer();
+  if (quality === 98) {
+    // Full HD: PNG minimal compression
+    return sharp(imageBuffer)
+      .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+      .png({ compression: 1 })
+      .toBuffer();
+  } else {
+    // Compressed: JPEG pour réduire drastiquement
+    return sharp(imageBuffer)
+      .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 75, progressive: true })
+      .toBuffer();
+  }
 };
 
 const generateCBZ = async (pages, covers, compression = 'compressed') => {
   const compressionLevel = compression === 'fullhd' ? 1 : 9;
+  const isFullHD = compression === 'fullhd';
   const archive = archiver('zip', { zlib: { level: compressionLevel } });
   const chunks = [];
 
@@ -72,15 +82,17 @@ const generateCBZ = async (pages, covers, compression = 'compressed') => {
 
       if (covers.comic_cover) {
         const coverBuffer = await downloadImage(covers.comic_cover);
-        const finalCoverBuffer = compression === 'fullhd' ? coverBuffer : await compressImage(coverBuffer);
-        archive.append(finalCoverBuffer, { name: `000_cover.png` });
+        const finalCoverBuffer = await compressImage(coverBuffer, isFullHD ? 98 : 85);
+        const coverExtension = isFullHD ? 'png' : 'jpg';
+        archive.append(finalCoverBuffer, { name: `000_cover.${coverExtension}` });
         fileIndex++;
       }
 
       if (covers.chapter_cover) {
         const chapterCoverBuffer = await downloadImage(covers.chapter_cover);
-        const finalChapterBuffer = compression === 'fullhd' ? chapterCoverBuffer : await compressImage(chapterCoverBuffer);
-        archive.append(finalChapterBuffer, { name: `001_chapter.png` });
+        const finalChapterBuffer = await compressImage(chapterCoverBuffer, isFullHD ? 98 : 85);
+        const chapterExtension = isFullHD ? 'png' : 'jpg';
+        archive.append(finalChapterBuffer, { name: `001_chapter.${chapterExtension}` });
         fileIndex++;
       }
 
@@ -89,16 +101,18 @@ const generateCBZ = async (pages, covers, compression = 'compressed') => {
         
         console.log(`Downloading page ${page.page_number}...`);
         const imageBuffer = await downloadImage(page.image_url);
-        const finalImageBuffer = compression === 'fullhd' ? imageBuffer : await compressImage(imageBuffer);
+        const finalImageBuffer = await compressImage(imageBuffer, isFullHD ? 98 : 85);
         const paddedNumber = String(fileIndex).padStart(3, '0');
-        archive.append(finalImageBuffer, { name: `${paddedNumber}_page_${page.page_number}.png` });
+        const extension = isFullHD ? 'png' : 'jpg';
+        archive.append(finalImageBuffer, { name: `${paddedNumber}_page_${page.page_number}.${extension}` });
         fileIndex++;
       }
 
       if (covers.back_cover) {
         const backCoverBuffer = await downloadImage(covers.back_cover);
-        const finalBackBuffer = compression === 'fullhd' ? backCoverBuffer : await compressImage(backCoverBuffer);
-        archive.append(finalBackBuffer, { name: `${String(fileIndex).padStart(3, '0')}_back.png` });
+        const finalBackBuffer = await compressImage(backCoverBuffer, isFullHD ? 98 : 85);
+        const backExtension = isFullHD ? 'png' : 'jpg';
+        archive.append(finalBackBuffer, { name: `${String(fileIndex).padStart(3, '0')}_back.${backExtension}` });
       }
 
       archive.finalize();
@@ -111,11 +125,14 @@ const generateCBZ = async (pages, covers, compression = 'compressed') => {
 const generatePDF = async (pages, covers, compression = 'compressed') => {
   const pdfDoc = await PDFDocument.create();
   const quality = compression === 'fullhd' ? 98 : 85;
+  const isFullHD = compression === 'fullhd';
 
   if (covers.comic_cover) {
     const coverBuffer = await downloadImage(covers.comic_cover);
     const imageBuffer = await compressImage(coverBuffer, quality);
-    const coverImage = await pdfDoc.embedPng(imageBuffer);
+    const coverImage = isFullHD 
+      ? await pdfDoc.embedPng(imageBuffer)
+      : await pdfDoc.embedJpeg(imageBuffer);
     const coverPage = pdfDoc.addPage([coverImage.width, coverImage.height]);
     coverPage.drawImage(coverImage, { x: 0, y: 0, width: coverImage.width, height: coverImage.height });
   }
@@ -123,7 +140,9 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
   if (covers.chapter_cover) {
     const chapterBuffer = await downloadImage(covers.chapter_cover);
     const imageBuffer = await compressImage(chapterBuffer, quality);
-    const chapterImage = await pdfDoc.embedPng(imageBuffer);
+    const chapterImage = isFullHD 
+      ? await pdfDoc.embedPng(imageBuffer)
+      : await pdfDoc.embedJpeg(imageBuffer);
     const chapterPage = pdfDoc.addPage([chapterImage.width, chapterImage.height]);
     chapterPage.drawImage(chapterImage, { x: 0, y: 0, width: chapterImage.width, height: chapterImage.height });
   }
@@ -134,7 +153,9 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
     console.log(`Processing page ${page.page_number}...`);
     const imageBuffer = await downloadImage(page.image_url);
     const finalBuffer = await compressImage(imageBuffer, quality);
-    const image = await pdfDoc.embedPng(finalBuffer);
+    const image = isFullHD 
+      ? await pdfDoc.embedPng(finalBuffer)
+      : await pdfDoc.embedJpeg(finalBuffer);
     const pdfPage = pdfDoc.addPage([image.width, image.height]);
     pdfPage.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
   }
@@ -142,7 +163,9 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
   if (covers.back_cover) {
     const backBuffer = await downloadImage(covers.back_cover);
     const imageBuffer = await compressImage(backBuffer, quality);
-    const backImage = await pdfDoc.embedPng(imageBuffer);
+    const backImage = isFullHD 
+      ? await pdfDoc.embedPng(imageBuffer)
+      : await pdfDoc.embedJpeg(imageBuffer);
     const backPage = pdfDoc.addPage([backImage.width, backImage.height]);
     backPage.drawImage(backImage, { x: 0, y: 0, width: backImage.width, height: backImage.height });
   }
@@ -173,14 +196,19 @@ const processQueue = async () => {
 };
 
 app.post('/export', async (req, res) => {
-  const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
+  const { exportId, comicName, chapterNumber, format, pages, covers, compression = 'compressed' } = req.body;
 
-  console.log(`📋 Export queued: ${comicName} (${format.toUpperCase()}, position: ${exportQueue.length + 1})`);
+  console.log(`📋 Export queued: ${comicName} (${format.toUpperCase()}, ${compression}, position: ${exportQueue.length + 1})`);
 
-  res.json({ success: true, message: 'Export queued', exportId });
+  res.json({ 
+    success: true, 
+    message: 'Export queued', 
+    exportId,
+    queuePosition: exportQueue.length + 1
+  });
 
   exportQueue.push(async () => {
-    console.log(`🚀 Starting export: ${comicName}`);
+    console.log(`🚀 Starting export: ${comicName} - ${format.toUpperCase()} (${compression})`);
     
     try {
       await updateExportStatus(exportId, 'processing');
@@ -197,30 +225,38 @@ app.post('/export', async (req, res) => {
         fileBuffer = await generatePDF(pages, covers, compression);
         mimeType = 'application/pdf';
         fileExtension = 'pdf';
+      } else {
+        throw new Error(`Format non supporté: ${format}`);
       }
 
-      console.log(`✅ Generated: ${(fileBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+      const fileSizeMB = (fileBuffer.length / 1024 / 1024).toFixed(2);
+      console.log(`✅ Generated: ${fileSizeMB} MB (${compression})`);
 
       // Tous les exports via Railway download link
       const downloadToken = `${exportId}_${Date.now()}`;
       exportFiles.set(downloadToken, {
         buffer: fileBuffer,
         mimeType,
-        fileName: `${comicName}_Ch${chapterNumber}.${fileExtension}`,
+        fileName: `${comicName}_Ch${chapterNumber}_${compression}.${fileExtension}`,
         createdAt: Date.now()
       });
 
-      const downloadUrl = `https://comic-export-service-production.up.railway.app/download/${downloadToken}`;
+      const downloadUrl = `${process.env.RAILWAY_PUBLIC_DOMAIN || 'https://comic-export-service-production.up.railway.app'}/download/${downloadToken}`;
 
       await updateExportStatus(exportId, 'completed', {
         file_url: downloadUrl,
-        file_size: fileBuffer.length
+        file_size: fileBuffer.length,
+        file_size_mb: fileSizeMB,
+        compression: compression
       });
 
-      console.log('✅ Export ready for download!');
+      console.log(`✅ Export ready for download! (${compression})`);
     } catch (error) {
       console.error('❌ Export failed:', error);
-      await updateExportStatus(exportId, 'failed', { error_message: error.message });
+      await updateExportStatus(exportId, 'failed', { 
+        error_message: error.message,
+        compression: compression
+      });
     }
   });
 
@@ -255,7 +291,10 @@ app.get('/queue-status', (req, res) => {
   res.json({
     isProcessing,
     queueSize: exportQueue.length,
-    itemsInQueue: exportQueue.length
+    itemsInQueue: exportQueue.length,
+    storage: {
+      activeFiles: exportFiles.size
+    }
   });
 });
 
@@ -294,4 +333,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Export service on port ${PORT}`);
   console.log(`📋 Queue system ready`);
   console.log(`💾 All exports via Railway temporary storage`);
+  console.log(`🎯 Compression modes: fullhd (PNG 2048px) | compressed (JPEG 1536px 75%)`);
 });
