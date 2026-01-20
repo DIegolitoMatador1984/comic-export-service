@@ -13,6 +13,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Queue system for sequential processing
+const exportQueue = [];
+let isProcessing = false;
+
 const getSupabaseClient = () => {
   return createClient(
     process.env.SUPABASE_URL,
@@ -147,18 +151,47 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
   return Buffer.from(await pdfDoc.save());
 };
 
-// Ajoute après ta fonction generatePDF et AVANT app.post('/export'
+// Storage for Full HD files
 const exportFiles = new Map();
 
-// Puis remplace app.post('/export'...
+// Queue processor
+const processQueue = async () => {
+  if (isProcessing || exportQueue.length === 0) return;
+  
+  isProcessing = true;
+  const task = exportQueue.shift();
+  
+  try {
+    await task();
+  } catch (error) {
+    console.error('Queue task failed:', error);
+  }
+  
+  isProcessing = false;
+  if (exportQueue.length > 0) {
+    console.log(`📋 Queue size: ${exportQueue.length} remaining`);
+    processQueue();
+  } else {
+    console.log('✅ Queue empty');
+  }
+};
+
 app.post('/export', async (req, res) => {
   const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
 
-  console.log(`🚀 Starting ${format.toUpperCase()} export: ${pages.length} pages (${compression || 'compressed'} mode)`);
+  console.log(`📋 Export queued: ${comicName} (position: ${exportQueue.length + 1})`);
 
-  res.json({ success: true, message: 'Export started', exportId });
+  res.json({ 
+    success: true, 
+    message: 'Export queued', 
+    exportId,
+    queuePosition: exportQueue.length + 1
+  });
 
-  (async () => {
+  // Ajoute la tâche à la queue
+  exportQueue.push(async () => {
+    console.log(`🚀 Starting export: ${comicName} - ${format.toUpperCase()} (${compression})`);
+    
     try {
       await updateExportStatus(exportId, 'processing');
 
@@ -176,7 +209,7 @@ app.post('/export', async (req, res) => {
         fileExtension = 'pdf';
       }
 
-      console.log(`✅ Generated: ${fileBuffer.length} bytes`);
+      console.log(`✅ Generated: ${fileBuffer.length} bytes for ${comicName}`);
 
       // Full HD: return Railway download link
       if (compression === 'fullhd') {
@@ -193,10 +226,11 @@ app.post('/export', async (req, res) => {
           file_url: downloadUrl,
           file_size: fileBuffer.length
         });
+        console.log(`✅ Export completed: ${comicName} (Full HD)`);
         return;
       }
 
-      // Compressed: upload to Supabase (code existant)
+      // Compressed: upload to Supabase
       const supabase = getSupabaseClient();
       const fileName = `exports/${comicName}_Ch${chapterNumber}_${Date.now()}.${fileExtension}`;
       
@@ -215,14 +249,16 @@ app.post('/export', async (req, res) => {
         file_size: fileBuffer.length
       });
 
-      console.log('✅ Export completed!');
+      console.log(`✅ Export completed: ${comicName}`);
     } catch (error) {
       console.error('❌ Export failed:', error);
       await updateExportStatus(exportId, 'failed', {
         error_message: error.message
       });
     }
-  })();
+  });
+
+  processQueue();
 });
 
 // Download endpoint for Full HD files
@@ -248,10 +284,26 @@ app.get('/download/:token', (req, res) => {
   exportFiles.delete(token);
 });
 
+// Queue status endpoint
+app.get('/queue-status', (req, res) => {
+  res.json({
+    isProcessing,
+    queueSize: exportQueue.length,
+    itemsInQueue: exportQueue.length
+  });
+});
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ 
+    status: 'ok',
+    queue: {
+      processing: isProcessing,
+      pending: exportQueue.length
+    }
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 Export service on port ${PORT}`);
+  console.log(`📋 Queue system ready`);
 });
