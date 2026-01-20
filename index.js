@@ -50,15 +50,16 @@ const downloadImage = async (url) => {
   return Buffer.from(await response.arrayBuffer());
 };
 
-const compressImage = async (imageBuffer) => {
+const compressImage = async (imageBuffer, quality = 85) => {
   return sharp(imageBuffer)
     .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 85 })
+    .jpeg({ quality })
     .toBuffer();
 };
 
-const generateCBZ = async (pages, covers) => {
-  const archive = archiver('zip', { zlib: { level: 9 } });
+const generateCBZ = async (pages, covers, compression = 'compressed') => {
+  const compressionLevel = compression === 'fullhd' ? 1 : 9;
+  const archive = archiver('zip', { zlib: { level: compressionLevel } });
   const chunks = [];
 
   archive.on('data', (chunk) => chunks.push(chunk));
@@ -105,12 +106,13 @@ const generateCBZ = async (pages, covers) => {
   });
 };
 
-const generatePDF = async (pages, covers) => {
+const generatePDF = async (pages, covers, compression = 'compressed') => {
+  const quality = compression === 'fullhd' ? 95 : 85;
   const pdfDoc = await PDFDocument.create();
 
   if (covers.comic_cover) {
     const coverBuffer = await downloadImage(covers.comic_cover);
-    const compressedCover = await compressImage(coverBuffer);
+    const compressedCover = await compressImage(coverBuffer, quality);
     const coverImage = await pdfDoc.embedJpg(compressedCover);
     const coverPage = pdfDoc.addPage([coverImage.width, coverImage.height]);
     coverPage.drawImage(coverImage, { x: 0, y: 0, width: coverImage.width, height: coverImage.height });
@@ -118,7 +120,7 @@ const generatePDF = async (pages, covers) => {
 
   if (covers.chapter_cover) {
     const chapterBuffer = await downloadImage(covers.chapter_cover);
-    const compressedChapter = await compressImage(chapterBuffer);
+    const compressedChapter = await compressImage(chapterBuffer, quality);
     const chapterImage = await pdfDoc.embedJpg(compressedChapter);
     const chapterPage = pdfDoc.addPage([chapterImage.width, chapterImage.height]);
     chapterPage.drawImage(chapterImage, { x: 0, y: 0, width: chapterImage.width, height: chapterImage.height });
@@ -130,7 +132,7 @@ const generatePDF = async (pages, covers) => {
     
     console.log(`Processing page ${page.page_number}...`);
     const imageBuffer = await downloadImage(page.image_url);
-    const compressedImage = await compressImage(imageBuffer);
+    const compressedImage = await compressImage(imageBuffer, quality);
     const image = await pdfDoc.embedJpg(compressedImage);
     const pdfPage = pdfDoc.addPage([image.width, image.height]);
     pdfPage.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
@@ -138,7 +140,7 @@ const generatePDF = async (pages, covers) => {
 
   if (covers.back_cover) {
     const backBuffer = await downloadImage(covers.back_cover);
-    const compressedBack = await compressImage(backBuffer);
+    const compressedBack = await compressImage(backBuffer, quality);
     const backImage = await pdfDoc.embedJpg(compressedBack);
     const backPage = pdfDoc.addPage([backImage.width, backImage.height]);
     backPage.drawImage(backImage, { x: 0, y: 0, width: backImage.width, height: backImage.height });
@@ -148,9 +150,9 @@ const generatePDF = async (pages, covers) => {
 };
 
 app.post('/export', async (req, res) => {
-  const { exportId, comicName, chapterNumber, format, pages, covers } = req.body;
+  const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
 
-  console.log(`🚀 Starting ${format.toUpperCase()} export: ${pages.length} pages`);
+  console.log(`🚀 Starting ${format.toUpperCase()} export: ${pages.length} pages (${compression || 'compressed'} mode)`);
 
   res.json({ success: true, message: 'Export started', exportId });
 
@@ -163,11 +165,11 @@ app.post('/export', async (req, res) => {
       let fileExtension;
 
       if (format === 'cbz') {
-        fileBuffer = await generateCBZ(pages, covers);
+        fileBuffer = await generateCBZ(pages, covers, compression);
         mimeType = 'application/zip';
         fileExtension = 'cbz';
       } else if (format === 'pdf') {
-        fileBuffer = await generatePDF(pages, covers);
+        fileBuffer = await generatePDF(pages, covers, compression);
         mimeType = 'application/pdf';
         fileExtension = 'pdf';
       }
