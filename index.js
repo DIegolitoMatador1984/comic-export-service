@@ -43,6 +43,7 @@ const updateExportStatus = async (exportId, status, data = {}) => {
     console.error('❌ Error updating status:', error);
   }
 };
+
 const downloadImage = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
@@ -82,6 +83,9 @@ const generateCBZ = async (pages, covers) => {
       }
 
       for (const page of pages) {
+        // Skip page_number 0 (cover already added)
+        if (page.page_number === 0) continue;
+        
         console.log(`Downloading page ${page.page_number}...`);
         const imageBuffer = await downloadImage(page.image_url);
         const paddedNumber = String(fileIndex).padStart(3, '0');
@@ -121,6 +125,9 @@ const generatePDF = async (pages, covers) => {
   }
 
   for (const page of pages) {
+    // Skip page_number 0 (cover already added)
+    if (page.page_number === 0) continue;
+    
     console.log(`Processing page ${page.page_number}...`);
     const imageBuffer = await downloadImage(page.image_url);
     const compressedImage = await compressImage(imageBuffer);
