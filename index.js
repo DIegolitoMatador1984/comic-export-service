@@ -53,7 +53,7 @@ const downloadImage = async (url) => {
 const compressImage = async (imageBuffer, quality = 85) => {
   return sharp(imageBuffer)
     .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality })
+    .png({ compression: quality === 98 ? 1 : 6 })
     .toBuffer();
 };
 
@@ -73,30 +73,29 @@ const generateCBZ = async (pages, covers, compression = 'compressed') => {
 
       if (covers.comic_cover) {
         const coverBuffer = await downloadImage(covers.comic_cover);
-        archive.append(coverBuffer, { name: `000_cover.jpg` });
+        archive.append(coverBuffer, { name: `000_cover.png` });
         fileIndex++;
       }
 
       if (covers.chapter_cover) {
         const chapterCoverBuffer = await downloadImage(covers.chapter_cover);
-        archive.append(chapterCoverBuffer, { name: `001_chapter.jpg` });
+        archive.append(chapterCoverBuffer, { name: `001_chapter.png` });
         fileIndex++;
       }
 
       for (const page of pages) {
-        // Skip page_number 0 (cover already added)
         if (page.page_number === 0) continue;
         
         console.log(`Downloading page ${page.page_number}...`);
         const imageBuffer = await downloadImage(page.image_url);
         const paddedNumber = String(fileIndex).padStart(3, '0');
-        archive.append(imageBuffer, { name: `${paddedNumber}_page_${page.page_number}.jpg` });
+        archive.append(imageBuffer, { name: `${paddedNumber}_page_${page.page_number}.png` });
         fileIndex++;
       }
 
       if (covers.back_cover) {
         const backCoverBuffer = await downloadImage(covers.back_cover);
-        archive.append(backCoverBuffer, { name: `${String(fileIndex).padStart(3, '0')}_back.jpg` });
+        archive.append(backCoverBuffer, { name: `${String(fileIndex).padStart(3, '0')}_back.png` });
       }
 
       archive.finalize();
@@ -108,39 +107,39 @@ const generateCBZ = async (pages, covers, compression = 'compressed') => {
 
 const generatePDF = async (pages, covers, compression = 'compressed') => {
   const pdfDoc = await PDFDocument.create();
+  const quality = compression === 'fullhd' ? 98 : 85;
 
   if (covers.comic_cover) {
     const coverBuffer = await downloadImage(covers.comic_cover);
-    const imageBuffer = compression === 'fullhd' ? coverBuffer : await compressImage(coverBuffer, 85);
-    const coverImage = await pdfDoc.embedJpg(imageBuffer);
+    const imageBuffer = await compressImage(coverBuffer, quality);
+    const coverImage = await pdfDoc.embedPng(imageBuffer);
     const coverPage = pdfDoc.addPage([coverImage.width, coverImage.height]);
     coverPage.drawImage(coverImage, { x: 0, y: 0, width: coverImage.width, height: coverImage.height });
   }
 
   if (covers.chapter_cover) {
     const chapterBuffer = await downloadImage(covers.chapter_cover);
-    const imageBuffer = compression === 'fullhd' ? chapterBuffer : await compressImage(chapterBuffer, 85);
-    const chapterImage = await pdfDoc.embedJpg(imageBuffer);
+    const imageBuffer = await compressImage(chapterBuffer, quality);
+    const chapterImage = await pdfDoc.embedPng(imageBuffer);
     const chapterPage = pdfDoc.addPage([chapterImage.width, chapterImage.height]);
     chapterPage.drawImage(chapterImage, { x: 0, y: 0, width: chapterImage.width, height: chapterImage.height });
   }
 
   for (const page of pages) {
-    // Skip page_number 0 (cover already added)
     if (page.page_number === 0) continue;
     
     console.log(`Processing page ${page.page_number}...`);
     const imageBuffer = await downloadImage(page.image_url);
-    const finalBuffer = compression === 'fullhd' ? imageBuffer : await compressImage(imageBuffer, 85);
-    const image = await pdfDoc.embedJpg(finalBuffer);
+    const finalBuffer = await compressImage(imageBuffer, quality);
+    const image = await pdfDoc.embedPng(finalBuffer);
     const pdfPage = pdfDoc.addPage([image.width, image.height]);
     pdfPage.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
   }
 
   if (covers.back_cover) {
     const backBuffer = await downloadImage(covers.back_cover);
-    const imageBuffer = compression === 'fullhd' ? backBuffer : await compressImage(backBuffer, 85);
-    const backImage = await pdfDoc.embedJpg(imageBuffer);
+    const imageBuffer = await compressImage(backBuffer, quality);
+    const backImage = await pdfDoc.embedPng(imageBuffer);
     const backPage = pdfDoc.addPage([backImage.width, backImage.height]);
     backPage.drawImage(backImage, { x: 0, y: 0, width: backImage.width, height: backImage.height });
   }
