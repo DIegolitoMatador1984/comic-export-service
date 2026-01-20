@@ -14,8 +14,6 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const exportFiles = new Map();
-const exportQueue = [];
-let isProcessing = false;
 
 const getSupabaseClient = () => {
   return createClient(
@@ -46,22 +44,6 @@ const updateExportStatus = async (exportId, status, data = {}) => {
   } catch (error) {
     console.error('❌ Error updating status:', error);
   }
-};
-
-const processQueue = async () => {
-  if (isProcessing || exportQueue.length === 0) return;
-  
-  isProcessing = true;
-  const task = exportQueue.shift();
-  
-  try {
-    await task();
-  } catch (error) {
-    console.error('Queue task failed:', error);
-  }
-  
-  isProcessing = false;
-  if (exportQueue.length > 0) processQueue();
 };
 
 const downloadImage = async (url) => {
@@ -170,14 +152,11 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
 app.post('/export', async (req, res) => {
   const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
 
-  console.log(`📋 Export queued: ${comicName} (position: ${exportQueue.length + 1})`);
+  console.log(`🚀 Starting ${format.toUpperCase()} export: ${pages.length} pages (${compression || 'compressed'} mode)`);
 
-  res.json({ success: true, message: 'Export queued', exportId });
+  res.json({ success: true, message: 'Export started', exportId });
 
-  // Ajoute la tâche à la queue
-  exportQueue.push(async () => {
-    console.log(`🚀 Starting export: ${comicName}`);
-    
+  (async () => {
     try {
       await updateExportStatus(exportId, 'processing');
 
@@ -186,12 +165,10 @@ app.post('/export', async (req, res) => {
       let fileExtension;
 
       if (format === 'cbz') {
-        console.log(`📦 Generating CBZ: ${pages.length} pages (${compression || 'compressed'} mode)`);
         fileBuffer = await generateCBZ(pages, covers, compression);
         mimeType = 'application/zip';
         fileExtension = 'cbz';
       } else if (format === 'pdf') {
-        console.log(`📄 Generating PDF: ${pages.length} pages (${compression || 'compressed'} mode)`);
         fileBuffer = await generatePDF(pages, covers, compression);
         mimeType = 'application/pdf';
         fileExtension = 'pdf';
@@ -215,7 +192,7 @@ app.post('/export', async (req, res) => {
           file_size: fileBuffer.length
         });
         
-        console.log(`✅ Full HD export completed for ${comicName}!`);
+        console.log('✅ Full HD export completed with Railway download link!');
         return;
       }
 
@@ -223,7 +200,6 @@ app.post('/export', async (req, res) => {
       const supabase = getSupabaseClient();
       const fileName = `exports/${comicName}_Ch${chapterNumber}_${Date.now()}.${fileExtension}`;
       
-      console.log(`☁️ Uploading to Supabase: ${fileName}`);
       const { error: uploadError } = await supabase.storage
         .from('comics')
         .upload(fileName, fileBuffer, { contentType: mimeType });
@@ -239,16 +215,14 @@ app.post('/export', async (req, res) => {
         file_size: fileBuffer.length
       });
 
-      console.log(`✅ Compressed export completed for ${comicName}!`);
+      console.log('✅ Compressed export completed!');
     } catch (error) {
       console.error('❌ Export failed:', error);
       await updateExportStatus(exportId, 'failed', {
         error_message: error.message
       });
     }
-  });
-
-  processQueue();
+  })();
 });
 
 // Download endpoint for Full HD files
@@ -274,26 +248,10 @@ app.get('/download/:token', (req, res) => {
   exportFiles.delete(token);
 });
 
-// Status endpoint to check queue
-app.get('/queue-status', (req, res) => {
-  res.json({
-    queue_length: exportQueue.length,
-    is_processing: isProcessing,
-    memory_files: exportFiles.size,
-    status: isProcessing ? 'processing' : 'idle'
-  });
-});
-
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    queue: {
-      length: exportQueue.length,
-      is_processing: isProcessing
-    }
-  });
+  res.json({ status: 'ok' });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Export service on port ${PORT} with queue system`);
+  console.log(`🚀 Export service on port ${PORT}`);
 });
