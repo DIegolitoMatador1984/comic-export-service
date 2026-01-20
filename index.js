@@ -147,6 +147,10 @@ const generatePDF = async (pages, covers, compression = 'compressed') => {
   return Buffer.from(await pdfDoc.save());
 };
 
+// Ajoute après ta fonction generatePDF et AVANT app.post('/export'
+const exportFiles = new Map();
+
+// Puis remplace app.post('/export'...
 app.post('/export', async (req, res) => {
   const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
 
@@ -174,6 +178,25 @@ app.post('/export', async (req, res) => {
 
       console.log(`✅ Generated: ${fileBuffer.length} bytes`);
 
+      // Full HD: return Railway download link
+      if (compression === 'fullhd') {
+        const downloadToken = `${exportId}_${Date.now()}`;
+        exportFiles.set(downloadToken, {
+          buffer: fileBuffer,
+          mimeType,
+          fileName: `${comicName}_Ch${chapterNumber}.${fileExtension}`,
+          createdAt: Date.now()
+        });
+
+        const downloadUrl = `https://comic-export-service-production.up.railway.app/download/${downloadToken}`;
+        await updateExportStatus(exportId, 'completed', {
+          file_url: downloadUrl,
+          file_size: fileBuffer.length
+        });
+        return;
+      }
+
+      // Compressed: upload to Supabase (code existant)
       const supabase = getSupabaseClient();
       const fileName = `exports/${comicName}_Ch${chapterNumber}_${Date.now()}.${fileExtension}`;
       
@@ -200,6 +223,29 @@ app.post('/export', async (req, res) => {
       });
     }
   })();
+});
+
+// Download endpoint for Full HD files
+app.get('/download/:token', (req, res) => {
+  const { token } = req.params;
+  const fileData = exportFiles.get(token);
+
+  if (!fileData) {
+    return res.status(404).json({ error: 'File not found or expired' });
+  }
+
+  // Cleanup files > 24h
+  const now = Date.now();
+  for (const [key, data] of exportFiles.entries()) {
+    if (now - data.createdAt > 24 * 60 * 60 * 1000) {
+      exportFiles.delete(key);
+    }
+  }
+
+  res.setHeader('Content-Type', fileData.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileData.fileName}"`);
+  res.send(fileData.buffer);
+  exportFiles.delete(token);
 });
 
 app.get('/health', (req, res) => {
