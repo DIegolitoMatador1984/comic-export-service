@@ -263,18 +263,15 @@ app.get('/download/:token', (req, res) => {
     return res.status(404).json({ error: 'File not found or expired' });
   }
 
-  // Cleanup files > 24h
-  const now = Date.now();
-  for (const [key, data] of exportFiles.entries()) {
-    if (now - data.createdAt > 24 * 60 * 60 * 1000) {
-      exportFiles.delete(key);
-    }
-  }
-
   res.setHeader('Content-Type', fileData.mimeType);
   res.setHeader('Content-Disposition', `attachment; filename="${fileData.fileName}"`);
+  res.setHeader('Content-Length', fileData.buffer.length);
+  
   res.send(fileData.buffer);
+
+  // Nettoie après download
   exportFiles.delete(token);
+  console.log(`📥 File downloaded and cleaned up: ${token}`);
 });
 
 // Queue status endpoint
@@ -294,9 +291,9 @@ app.post('/cleanup', (req, res) => {
   const now = Date.now();
   let deletedCount = 0;
   
-  for (const [key, data] of exportFiles.entries()) {
-    if (now - data.createdAt > 24 * 60 * 60 * 1000) {
-      exportFiles.delete(key);
+  for (const [token, data] of exportFiles.entries()) {
+    if (now - data.createdAt > 3600000) { // 1 heure
+      exportFiles.delete(token);
       deletedCount++;
     }
   }
@@ -306,6 +303,23 @@ app.post('/cleanup', (req, res) => {
     remainingFiles: exportFiles.size
   });
 });
+
+// Cleanup expired files every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  let deletedCount = 0;
+  
+  for (const [token, data] of exportFiles.entries()) {
+    if (now - data.createdAt > 3600000) { // 1 heure
+      exportFiles.delete(token);
+      deletedCount++;
+    }
+  }
+  
+  if (deletedCount > 0) {
+    console.log(`🗑️ Cleaned up ${deletedCount} expired files (older than 1h)`);
+  }
+}, 600000); // 10 minutes
 
 app.get('/health', (req, res) => {
   res.json({ 
@@ -320,6 +334,10 @@ app.get('/health', (req, res) => {
     compression_settings: {
       fullhd: { dimensions: '2048px', png_compression: 1 },
       compressed: { dimensions: '1200px', png_compression: 9 }
+    },
+    cleanup: {
+      interval: '10 minutes',
+      retention: '1 hour'
     }
   });
 });
@@ -331,4 +349,5 @@ app.listen(PORT, () => {
   console.log(`🎯 Compression modes:`);
   console.log(`   • Full HD: PNG 2048px, compression min (1)`);
   console.log(`   • Compressed: PNG 1200px, compression max (9)`);
+  console.log(`🗑️  Auto-cleanup: Files deleted after 1 hour`);
 });
