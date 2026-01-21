@@ -105,17 +105,41 @@ const processImageCompressed = async (url) => {
   
   const inputBuffer = Buffer.from(await response.arrayBuffer());
   
+  // Get image info first
+  const metadata = await sharp(inputBuffer).metadata();
+  
   const processed = await sharp(inputBuffer)
     .flatten({ background: { r: 255, g: 255, b: 255 } }) // White background for transparent PNGs
-    .resize(1400, 1400, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 85, mozjpeg: true })
+    .resize(1800, 1800, { fit: 'inside', withoutEnlargement: true }) // Higher resolution
+    .jpeg({ quality: 90, mozjpeg: true }) // Higher quality
     .toBuffer();
+  
+  console.log(`   Compressed: ${(inputBuffer.length/1024).toFixed(0)}KB → ${(processed.length/1024).toFixed(0)}KB`);
   
   inputBuffer.fill(0);
   return processed;
 };
 
-// For FULL HD mode - keep original quality, just download
+// For FULL HD mode - light compression to reduce file size (~80% quality)
+const processImageFullHD = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download: ${url}`);
+  
+  const inputBuffer = Buffer.from(await response.arrayBuffer());
+  
+  // Light compression - keep high quality but reduce size
+  const processed = await sharp(inputBuffer)
+    .flatten({ background: { r: 255, g: 255, b: 255 } }) // White background for transparent PNGs
+    .png({ compressionLevel: 9, effort: 10 }) // Max PNG compression
+    .toBuffer();
+  
+  console.log(`   Full HD: ${(inputBuffer.length/1024).toFixed(0)}KB → ${(processed.length/1024).toFixed(0)}KB`);
+  
+  inputBuffer.fill(0);
+  return processed;
+};
+
+// Download original without any processing (fallback)
 const downloadImageOriginal = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
@@ -130,7 +154,7 @@ const generateCBZ = async (exportId, pages, covers, compression) => {
   const chunks = [];
   
   const archive = archiver('zip', { 
-    zlib: { level: isFullHD ? 1 : 6 }  // Less compression for Full HD (faster)
+    zlib: { level: isFullHD ? 6 : 9 }  // Good compression for both
   });
 
   archive.on('data', chunk => chunks.push(chunk));
@@ -143,7 +167,7 @@ const generateCBZ = async (exportId, pages, covers, compression) => {
 
     try {
       let fileIndex = 0;
-      const downloadFn = isFullHD ? downloadImageOriginal : processImageCompressed;
+      const downloadFn = isFullHD ? processImageFullHD : processImageCompressed;
       const ext = isFullHD ? 'png' : 'jpg';
 
       // Comic cover (from covers object)
@@ -220,8 +244,8 @@ const generatePDF = async (exportId, pages, covers, compression) => {
     let image;
     
     if (isFullHD) {
-      // Full HD: Keep original PNG
-      imageBuffer = await downloadImageOriginal(imageUrl);
+      // Full HD: Compress PNG
+      imageBuffer = await processImageFullHD(imageUrl);
       image = await pdfDoc.embedPng(imageBuffer);
     } else {
       // Compressed: Use JPEG
@@ -324,9 +348,9 @@ app.post('/export', async (req, res) => {
       await updateExportStatus(exportId, 'processing');
       
       const sanitizedName = comicName.replace(/[^a-zA-Z0-9]/g, '_');
-      const timestamp = Date.now();
       const fileExtension = format === 'pdf' ? 'pdf' : 'cbz';
-      const fileName = `${sanitizedName}_Ch${chapterNumber}_${timestamp}.${fileExtension}`;
+      // Filename based on comic + chapter + compression (no timestamp = overwrites previous)
+      const fileName = `${sanitizedName}_Ch${chapterNumber}_${compression}.${fileExtension}`;
       const mimeType = format === 'pdf' ? 'application/pdf' : 'application/zip';
 
       let fileBuffer;
