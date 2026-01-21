@@ -76,7 +76,7 @@ const getSupabaseClient = () => {
 const updateExportStatus = async (exportId, status, data = {}) => {
   try {
     const response = await fetch(
-      'https://preview--comicreate-5f5892c3.base44.app/api/apps/69625406b9fddce15f5892c3/functions/updateExportStatus',
+      'https://comicreate-5f5892c3.base44.app/api/functions/updateExportStatus',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -105,7 +105,7 @@ const processImageCompressed = async (url) => {
   
   const inputBuffer = Buffer.from(await response.arrayBuffer());
   
-  // Resize and compress as PNG (JPEG was causing blank pages in pdf-lib)
+  // Resize and compress as PNG
   const processed = await sharp(inputBuffer)
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
@@ -118,23 +118,15 @@ const processImageCompressed = async (url) => {
   return processed;
 };
 
-// For FULL HD mode - keep full resolution, light compression (80% quality = 20% reduction)
+// For FULL HD mode - keep original images AS-IS (no processing = no bloat)
 const processImageFullHD = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
   
-  const inputBuffer = Buffer.from(await response.arrayBuffer());
+  const buffer = Buffer.from(await response.arrayBuffer());
+  console.log(`   Full HD: ${(buffer.length/1024).toFixed(0)}KB (original)`);
   
-  // Keep original size, just optimize PNG compression
-  const processed = await sharp(inputBuffer)
-    .flatten({ background: { r: 255, g: 255, b: 255 } })
-    .png({ compressionLevel: 6 }) // Medium compression (faster, still good quality)
-    .toBuffer();
-  
-  console.log(`   Full HD: ${(inputBuffer.length/1024).toFixed(0)}KB → ${(processed.length/1024).toFixed(0)}KB`);
-  
-  inputBuffer.fill(0);
-  return processed;
+  return buffer;
 };
 
 // Download original without any processing (fallback)
