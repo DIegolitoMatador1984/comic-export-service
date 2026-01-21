@@ -1,4 +1,4 @@
-// Railway Export Service - Refactored with Queue & Memory Management
+// Railway Export Service - Dual Storage Strategy
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -6,16 +6,46 @@ const archiver = require('archiver');
 const { PDFDocument } = require('pdf-lib');
 const sharp = require('sharp');
 const { createClient } = require('@supabase/supabase-js');
-const { PassThrough } = require('stream');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Reduced - we don't need big payloads
+app.use(express.json({ limit: '10mb' }));
 
 // ============================================
-// QUEUE SYSTEM - Prevents memory overload
+// TEMPORARY FILE STORAGE (for Full HD)
+// ============================================
+const tempFiles = new Map();
+const TEMP_DIR = path.join(os.tmpdir(), 'comic-exports');
+
+// Ensure temp directory exists
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
+
+// Cleanup old files every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = 2 * 60 * 60 * 1000; // 2 hours
+  
+  for (const [token, data] of tempFiles.entries()) {
+    if (now - data.createdAt > maxAge) {
+      // Delete file from disk
+      if (fs.existsSync(data.filePath)) {
+        fs.unlinkSync(data.filePath);
+        console.log(`🗑️ Cleaned up expired file: ${token}`);
+      }
+      tempFiles.delete(token);
+    }
+  }
+}, 10 * 60 * 1000);
+
+// ============================================
+// QUEUE SYSTEM
 // ============================================
 class ExportQueue {
   constructor(maxConcurrent = 2) {
@@ -46,7 +76,7 @@ class ExportQueue {
       reject(error);
     } finally {
       this.running--;
-      this.process(); // Process next in queue
+      this.process();
     }
   }
 
@@ -59,7 +89,6 @@ class ExportQueue {
   }
 }
 
-// Max 2 concurrent exports to stay under Railway memory limits
 const exportQueue = new ExportQueue(2);
 
 // ============================================
@@ -97,113 +126,84 @@ const updateExportStatus = async (exportId, status, data = {}) => {
 };
 
 // ============================================
-// IMAGE PROCESSING - Memory optimized
+// IMAGE PROCESSING
 // ============================================
-const downloadAndProcessImage = async (url, quality = 85) => {
+
+// For COMPRESSED mode - resize and convert to JPEG
+const processImageCompressed = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
   
   const inputBuffer = Buffer.from(await response.arrayBuffer());
   
-  // Process with sharp - memory efficient
   const processed = await sharp(inputBuffer)
-    .resize(2048, 2048, { 
-      fit: 'inside', 
-      withoutEnlargement: true 
-    })
-    .png({ 
-      compressionLevel: quality === 98 ? 1 : 6,
-      effort: quality === 98 ? 1 : 7
-    })
+    .resize(1400, 1400, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 82, mozjpeg: true })
     .toBuffer();
   
-  // Explicitly release input buffer
   inputBuffer.fill(0);
-  
   return processed;
 };
 
-// Download without processing (for CBZ)
-const downloadImage = async (url) => {
+// For FULL HD mode - keep original quality, just download
+const downloadImageOriginal = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
   return Buffer.from(await response.arrayBuffer());
 };
 
 // ============================================
-// CBZ GENERATION - Streaming to Supabase
+// CBZ GENERATION
 // ============================================
-const generateAndUploadCBZ = async (exportId, pages, covers, compression, fileName, supabase) => {
+const generateCBZ = async (exportId, pages, covers, compression) => {
+  const isFullHD = compression === 'fullhd';
   const chunks = [];
+  
   const archive = archiver('zip', { 
-    zlib: { level: compression === 'fullhd' ? 1 : 6 } 
+    zlib: { level: isFullHD ? 1 : 6 }  // Less compression for Full HD (faster)
   });
 
   archive.on('data', chunk => chunks.push(chunk));
 
   return new Promise(async (resolve, reject) => {
     archive.on('error', reject);
-    archive.on('end', async () => {
-      try {
-        const finalBuffer = Buffer.concat(chunks);
-        console.log(`📦 [${exportId}] CBZ generated: ${(finalBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-        // Upload to Supabase
-        const { error } = await supabase.storage
-          .from('comics')
-          .upload(fileName, finalBuffer, { 
-            contentType: 'application/zip',
-            upsert: true
-          });
-
-        if (error) throw error;
-
-        const { data: { publicUrl } } = supabase.storage
-          .from('comics')
-          .getPublicUrl(fileName);
-
-        resolve({ url: publicUrl, size: finalBuffer.length });
-      } catch (err) {
-        reject(err);
-      }
+    archive.on('end', () => {
+      resolve(Buffer.concat(chunks));
     });
 
     try {
       let fileIndex = 0;
+      const downloadFn = isFullHD ? downloadImageOriginal : processImageCompressed;
+      const ext = isFullHD ? 'png' : 'jpg';
 
-      // Process covers
       if (covers.comic_cover) {
-        console.log(`📥 [${exportId}] Downloading comic cover...`);
-        const buffer = await downloadImage(covers.comic_cover);
-        archive.append(buffer, { name: `000_cover.png` });
+        console.log(`📥 [${exportId}] Cover...`);
+        const buffer = await downloadFn(covers.comic_cover);
+        archive.append(buffer, { name: `000_cover.${ext}` });
         fileIndex++;
       }
 
       if (covers.chapter_cover) {
-        console.log(`📥 [${exportId}] Downloading chapter cover...`);
-        const buffer = await downloadImage(covers.chapter_cover);
-        archive.append(buffer, { name: `001_chapter.png` });
+        console.log(`📥 [${exportId}] Chapter cover...`);
+        const buffer = await downloadFn(covers.chapter_cover);
+        archive.append(buffer, { name: `001_chapter.${ext}` });
         fileIndex++;
       }
 
-      // Process pages ONE BY ONE to control memory
       for (const page of pages) {
         if (page.page_number === 0) continue;
         
         console.log(`📥 [${exportId}] Page ${page.page_number}/${pages.length}...`);
-        const buffer = await downloadImage(page.image_url);
+        const buffer = await downloadFn(page.image_url);
         const paddedNumber = String(fileIndex).padStart(3, '0');
-        archive.append(buffer, { name: `${paddedNumber}_page_${page.page_number}.png` });
+        archive.append(buffer, { name: `${paddedNumber}_page_${page.page_number}.${ext}` });
         fileIndex++;
-        
-        // Force garbage collection hint
-        if (global.gc) global.gc();
       }
 
       if (covers.back_cover) {
-        console.log(`📥 [${exportId}] Downloading back cover...`);
-        const buffer = await downloadImage(covers.back_cover);
-        archive.append(buffer, { name: `${String(fileIndex).padStart(3, '0')}_back.png` });
+        console.log(`📥 [${exportId}] Back cover...`);
+        const buffer = await downloadFn(covers.back_cover);
+        archive.append(buffer, { name: `${String(fileIndex).padStart(3, '0')}_back.${ext}` });
       }
 
       archive.finalize();
@@ -214,11 +214,11 @@ const generateAndUploadCBZ = async (exportId, pages, covers, compression, fileNa
 };
 
 // ============================================
-// PDF GENERATION - Chunked processing
+// PDF GENERATION
 // ============================================
-const generateAndUploadPDF = async (exportId, pages, covers, compression, fileName, supabase) => {
+const generatePDF = async (exportId, pages, covers, compression) => {
   const pdfDoc = await PDFDocument.create();
-  const quality = compression === 'fullhd' ? 98 : 85;
+  const isFullHD = compression === 'fullhd';
   
   const totalItems = [
     covers.comic_cover,
@@ -232,66 +232,97 @@ const generateAndUploadPDF = async (exportId, pages, covers, compression, fileNa
   const addImageToPdf = async (imageUrl, label) => {
     console.log(`📄 [${exportId}] ${label} (${++processed}/${totalItems})...`);
     
-    const imageBuffer = await downloadAndProcessImage(imageUrl, quality);
-    const image = await pdfDoc.embedPng(imageBuffer);
-    const page = pdfDoc.addPage([image.width, image.height]);
-    page.drawImage(image, { 
-      x: 0, 
-      y: 0, 
-      width: image.width, 
-      height: image.height 
-    });
+    let imageBuffer;
+    let image;
     
-    // Release buffer
+    if (isFullHD) {
+      // Full HD: Keep original PNG
+      imageBuffer = await downloadImageOriginal(imageUrl);
+      image = await pdfDoc.embedPng(imageBuffer);
+    } else {
+      // Compressed: Use JPEG
+      imageBuffer = await processImageCompressed(imageUrl);
+      image = await pdfDoc.embedJpg(imageBuffer);
+    }
+    
+    const page = pdfDoc.addPage([image.width, image.height]);
+    page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+    
     imageBuffer.fill(0);
   };
 
   try {
-    // Covers
-    if (covers.comic_cover) {
-      await addImageToPdf(covers.comic_cover, 'Comic cover');
-    }
-    if (covers.chapter_cover) {
-      await addImageToPdf(covers.chapter_cover, 'Chapter cover');
-    }
+    if (covers.comic_cover) await addImageToPdf(covers.comic_cover, 'Comic cover');
+    if (covers.chapter_cover) await addImageToPdf(covers.chapter_cover, 'Chapter cover');
 
-    // Pages - one by one
     for (const page of pages) {
       if (page.page_number === 0) continue;
       await addImageToPdf(page.image_url, `Page ${page.page_number}`);
     }
 
-    // Back cover
-    if (covers.back_cover) {
-      await addImageToPdf(covers.back_cover, 'Back cover');
-    }
+    if (covers.back_cover) await addImageToPdf(covers.back_cover, 'Back cover');
 
-    // Save PDF
     console.log(`💾 [${exportId}] Saving PDF...`);
     const pdfBytes = await pdfDoc.save();
-    const pdfBuffer = Buffer.from(pdfBytes);
-    
-    console.log(`📦 [${exportId}] PDF generated: ${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-    // Upload to Supabase
-    const { error } = await supabase.storage
-      .from('comics')
-      .upload(fileName, pdfBuffer, { 
-        contentType: 'application/pdf',
-        upsert: true
-      });
-
-    if (error) throw error;
-
-    const { data: { publicUrl } } = supabase.storage
-      .from('comics')
-      .getPublicUrl(fileName);
-
-    return { url: publicUrl, size: pdfBuffer.length };
+    return Buffer.from(pdfBytes);
     
   } catch (error) {
     throw error;
   }
+};
+
+// ============================================
+// UPLOAD / STORE LOGIC
+// ============================================
+const storeFile = async (exportId, fileBuffer, fileName, mimeType, compression) => {
+  const isFullHD = compression === 'fullhd';
+  const fileSizeMB = fileBuffer.length / 1024 / 1024;
+  
+  console.log(`📦 [${exportId}] Generated: ${fileSizeMB.toFixed(2)} MB (${compression})`);
+
+  // FULL HD: Store on disk, return Railway download link
+  if (isFullHD) {
+    const downloadToken = `${exportId}_${Date.now()}`;
+    const filePath = path.join(TEMP_DIR, `${downloadToken}_${fileName}`);
+    
+    // Write to disk instead of keeping in memory
+    fs.writeFileSync(filePath, fileBuffer);
+    
+    tempFiles.set(downloadToken, {
+      filePath,
+      mimeType,
+      fileName,
+      createdAt: Date.now()
+    });
+
+    const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN || 'comic-export-service-production.up.railway.app';
+    const downloadUrl = `https://${railwayUrl}/download/${downloadToken}`;
+    
+    console.log(`🔗 [${exportId}] Full HD stored temporarily: ${downloadToken}`);
+    
+    return { url: downloadUrl, size: fileBuffer.length };
+  }
+
+  // COMPRESSED: Upload to Supabase
+  const supabase = getSupabaseClient();
+  const storagePath = `exports/${fileName}`;
+  
+  const { error } = await supabase.storage
+    .from('comics')
+    .upload(storagePath, fileBuffer, { 
+      contentType: mimeType,
+      upsert: true
+    });
+
+  if (error) throw new Error(`Supabase upload failed: ${error.message}`);
+
+  const { data: { publicUrl } } = supabase.storage
+    .from('comics')
+    .getPublicUrl(storagePath);
+
+  console.log(`☁️ [${exportId}] Uploaded to Supabase`);
+  
+  return { url: publicUrl, size: fileBuffer.length };
 };
 
 // ============================================
@@ -300,15 +331,13 @@ const generateAndUploadPDF = async (exportId, pages, covers, compression, fileNa
 app.post('/export', async (req, res) => {
   const { exportId, comicName, chapterNumber, format, pages, covers, compression } = req.body;
 
-  // Validation
   if (!exportId || !pages || pages.length === 0) {
     return res.status(400).json({ success: false, error: 'Invalid request' });
   }
 
   const queueStatus = exportQueue.getStatus();
-  console.log(`📬 [${exportId}] Export queued. Queue: ${queueStatus.queued} waiting, ${queueStatus.running} running`);
+  console.log(`📬 [${exportId}] Queued (${compression}). Queue: ${queueStatus.queued} waiting, ${queueStatus.running} running`);
 
-  // Respond immediately with queue position
   res.json({ 
     success: true, 
     message: 'Export queued',
@@ -316,30 +345,30 @@ app.post('/export', async (req, res) => {
     queuePosition: queueStatus.queued + 1
   });
 
-  // Add to queue
   exportQueue.add(async () => {
     const startTime = Date.now();
     
     try {
       await updateExportStatus(exportId, 'processing');
       
-      const supabase = getSupabaseClient();
       const sanitizedName = comicName.replace(/[^a-zA-Z0-9]/g, '_');
       const timestamp = Date.now();
       const fileExtension = format === 'pdf' ? 'pdf' : 'cbz';
-      const fileName = `exports/${sanitizedName}_Ch${chapterNumber}_${timestamp}.${fileExtension}`;
+      const fileName = `${sanitizedName}_Ch${chapterNumber}_${timestamp}.${fileExtension}`;
+      const mimeType = format === 'pdf' ? 'application/pdf' : 'application/zip';
 
-      let result;
+      let fileBuffer;
 
       if (format === 'cbz') {
-        result = await generateAndUploadCBZ(
-          exportId, pages, covers, compression, fileName, supabase
-        );
+        fileBuffer = await generateCBZ(exportId, pages, covers, compression);
       } else {
-        result = await generateAndUploadPDF(
-          exportId, pages, covers, compression, fileName, supabase
-        );
+        fileBuffer = await generatePDF(exportId, pages, covers, compression);
       }
+
+      const result = await storeFile(exportId, fileBuffer, fileName, mimeType, compression);
+      
+      // Free memory
+      fileBuffer = null;
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`✅ [${exportId}] Completed in ${duration}s`);
@@ -361,6 +390,39 @@ app.post('/export', async (req, res) => {
 });
 
 // ============================================
+// DOWNLOAD ENDPOINT (for Full HD files)
+// ============================================
+app.get('/download/:token', (req, res) => {
+  const { token } = req.params;
+  const fileData = tempFiles.get(token);
+
+  if (!fileData) {
+    return res.status(404).json({ error: 'File not found or expired. Full HD downloads expire after 2 hours.' });
+  }
+
+  if (!fs.existsSync(fileData.filePath)) {
+    tempFiles.delete(token);
+    return res.status(404).json({ error: 'File no longer available' });
+  }
+
+  console.log(`📥 Download: ${token}`);
+  
+  res.setHeader('Content-Type', fileData.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileData.fileName}"`);
+  
+  // Stream file from disk
+  const fileStream = fs.createReadStream(fileData.filePath);
+  fileStream.pipe(res);
+  
+  // Delete after download
+  fileStream.on('end', () => {
+    fs.unlink(fileData.filePath, () => {});
+    tempFiles.delete(token);
+    console.log(`🗑️ Downloaded and cleaned: ${token}`);
+  });
+});
+
+// ============================================
 // STATUS ENDPOINT
 // ============================================
 app.get('/status', (req, res) => {
@@ -369,6 +431,7 @@ app.get('/status', (req, res) => {
   
   res.json({
     queue: status,
+    tempFiles: tempFiles.size,
     memory: {
       heapUsed: `${(memUsage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
       heapTotal: `${(memUsage.heapTotal / 1024 / 1024).toFixed(2)} MB`,
@@ -390,4 +453,5 @@ app.get('/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Export service running on port ${PORT}`);
   console.log(`📊 Max concurrent exports: ${exportQueue.maxConcurrent}`);
+  console.log(`📁 Temp directory: ${TEMP_DIR}`);
 });
