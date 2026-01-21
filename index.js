@@ -98,20 +98,18 @@ const updateExportStatus = async (exportId, status, data = {}) => {
 // IMAGE PROCESSING
 // ============================================
 
-// For COMPRESSED mode - resize and convert to JPEG (with white background for transparency)
+// For COMPRESSED mode - resize and keep as optimized PNG
 const processImageCompressed = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
   
   const inputBuffer = Buffer.from(await response.arrayBuffer());
   
-  // Get image info first
-  const metadata = await sharp(inputBuffer).metadata();
-  
+  // Resize and compress as PNG (JPEG was causing blank pages in pdf-lib)
   const processed = await sharp(inputBuffer)
-    .flatten({ background: { r: 255, g: 255, b: 255 } }) // White background for transparent PNGs
-    .resize(1800, 1800, { fit: 'inside', withoutEnlargement: true }) // Higher resolution
-    .jpeg({ quality: 90, mozjpeg: true }) // Higher quality
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
+    .png({ compressionLevel: 9, palette: true }) // High compression PNG
     .toBuffer();
   
   console.log(`   Compressed: ${(inputBuffer.length/1024).toFixed(0)}KB → ${(processed.length/1024).toFixed(0)}KB`);
@@ -120,17 +118,17 @@ const processImageCompressed = async (url) => {
   return processed;
 };
 
-// For FULL HD mode - light compression to reduce file size (~80% quality)
+// For FULL HD mode - keep full resolution, light compression (80% quality = 20% reduction)
 const processImageFullHD = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to download: ${url}`);
   
   const inputBuffer = Buffer.from(await response.arrayBuffer());
   
-  // Light compression - keep high quality but reduce size
+  // Keep original size, just optimize PNG compression
   const processed = await sharp(inputBuffer)
-    .flatten({ background: { r: 255, g: 255, b: 255 } }) // White background for transparent PNGs
-    .png({ compressionLevel: 9, effort: 10 }) // Max PNG compression
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .png({ compressionLevel: 6 }) // Medium compression (faster, still good quality)
     .toBuffer();
   
   console.log(`   Full HD: ${(inputBuffer.length/1024).toFixed(0)}KB → ${(processed.length/1024).toFixed(0)}KB`);
@@ -168,7 +166,7 @@ const generateCBZ = async (exportId, pages, covers, compression) => {
     try {
       let fileIndex = 0;
       const downloadFn = isFullHD ? processImageFullHD : processImageCompressed;
-      const ext = isFullHD ? 'png' : 'jpg';
+      const ext = 'png'; // Always PNG for best compatibility
 
       // Comic cover (from covers object)
       if (covers.comic_cover) {
@@ -241,17 +239,15 @@ const generatePDF = async (exportId, pages, covers, compression) => {
     console.log(`📄 [${exportId}] ${label} (${++processed}/${totalItems})...`);
     
     let imageBuffer;
-    let image;
     
     if (isFullHD) {
-      // Full HD: Compress PNG
       imageBuffer = await processImageFullHD(imageUrl);
-      image = await pdfDoc.embedPng(imageBuffer);
     } else {
-      // Compressed: Use JPEG
       imageBuffer = await processImageCompressed(imageUrl);
-      image = await pdfDoc.embedJpg(imageBuffer);
     }
+    
+    // Always use embedPng since JPEG was causing blank pages
+    const image = await pdfDoc.embedPng(imageBuffer);
     
     const page = pdfDoc.addPage([image.width, image.height]);
     page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
